@@ -12,11 +12,14 @@ export default function ProjectSelectView({ go }) {
     projectToDelete, setProjectToDelete,
     deleteConfirm, setDeleteConfirm, deleteProject,
     notif, notify,
-    ctx: { API, fmtDate, fmtNum, billing, subkeys, masterKeys, analytics },
+    ctx: { API, fmtDate, fmtNum, billing, subkeys, masterKeys, analytics, copyText, copiedItem },
   } = useLethem();
   const { user, logout, getAccessToken, isAuthenticated } = useAuth();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [accountUsage, setAccountUsage] = useState({ subkeys: 0, masterKeys: 0, tokens: 0, requests: 0, loading: false });
+  const onboardingCacheScope = user?.sub || 'anonymous';
+  const onboardingDismissedKey = '/console-page/getting-started-dismissed';
+  const [hideOnboarding, setHideOnboarding] = useState(() => Boolean(cacheGet(onboardingDismissedKey, onboardingCacheScope)));
 
   const currentPlan = billing?.plans?.find((plan) => plan.id === billing.currentPlan) || billing?.plans?.find((plan) => plan.id === 'free');
   const limits = currentPlan?.limits || {};
@@ -33,8 +36,9 @@ export default function ProjectSelectView({ go }) {
   const tokenUsage = Math.max(accountUsage.tokens, analytics?.totalTokens || 0);
   const requestCount = Math.max(accountUsage.requests, analytics?.totalRequests || 0, analytics?.logs?.length || 0);
   const isAtProjectLimit = projectLimit != null && projects.length >= projectLimit;
-  const userLabel = user?.email || user?.name || 'obito@keygate.dev';
+  const userLabel = user?.name || user?.email || 'Signed in';
   const avatar = userLabel.charAt(0).toUpperCase();
+  const avatarImage = user?.picture || '';
 
 
 
@@ -132,17 +136,28 @@ export default function ProjectSelectView({ go }) {
   const completedSteps = onboardingSteps.filter((step) => step.done).length;
   const onboardingPercent = (completedSteps / onboardingSteps.length) * 100;
 
-  const usageCards = [
-    { label: 'Projects', value: `${projects.length} / ${projectLimitLabel}`, icon: '▣' },
-    { label: 'Subkeys', value: `${fmtNum(displayedSubkeys)} / ${subkeyLimitLabel}`, icon: '⌘' },
-    { label: 'Token usage', value: `${fmtNum(tokenUsage)} / ${tokenLimitLabel}`, icon: '↯' },
-    { label: 'Current plan', value: currentPlan?.name || 'Free', icon: '▭' },
-  ];
   const planMeters = [
     { label: 'Projects', used: projects.length, limit: projectLimit },
     { label: 'Subkeys', used: displayedSubkeys, limit: subkeyLimit },
     { label: 'Tokens', used: tokenUsage, limit: tokenLimit },
   ];
+
+  useEffect(() => {
+    const cached = Boolean(cacheGet(onboardingDismissedKey, onboardingCacheScope));
+    if (cached) setHideOnboarding(true);
+  }, [onboardingCacheScope]);
+
+  useEffect(() => {
+    if (completedSteps === onboardingSteps.length) {
+      cacheSet(onboardingDismissedKey, true, onboardingCacheScope);
+      setHideOnboarding(true);
+    }
+  }, [completedSteps, onboardingSteps.length, onboardingCacheScope]);
+
+  const dismissOnboarding = () => {
+    cacheSet(onboardingDismissedKey, true, onboardingCacheScope);
+    setHideOnboarding(true);
+  };
 
   const handleDelete = async () => {
     if (!canDeleteProject || !projectToDelete) return;
@@ -161,7 +176,7 @@ export default function ProjectSelectView({ go }) {
         <div className='project-console-nav-actions'>
           <button className='project-console-icon-btn' type='button' aria-label='Notifications' onClick={() => goProjectPage('notifications')}><IconBell /></button>
           <div className='project-console-user-wrap'>
-            <button className='project-console-user' type='button' aria-haspopup='menu' aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((open) => !open)}><span>{avatar}</span>{userLabel}</button>
+            <button className='project-console-user' type='button' aria-haspopup='menu' aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((open) => !open)}><span>{avatarImage ? <img src={avatarImage} alt='' /> : avatar}</span>{userLabel}</button>
             {userMenuOpen && <div className='project-console-user-menu' role='menu'>
               <button type='button' role='menuitem' onClick={() => { setUserMenuOpen(false); go('/console/profile'); }}><IconUser /> Profile</button>
               <button type='button' role='menuitem' onClick={() => { setUserMenuOpen(false); go('/console/workspace'); }}><IconSettings /> Workspace Settings</button>
@@ -180,23 +195,21 @@ export default function ProjectSelectView({ go }) {
             <p>Create, switch, and manage isolated workspaces</p>
           </div>
           <div className='console-top-bar'>
-            <div className='console-plan-badge'>
+            <button type='button' className='console-plan-badge project-console-plan-link' onClick={() => go('/console/subscription')} aria-label='Open subscription page'>
               <span className='console-plan-dot' /> {currentPlan?.name || 'Free'} plan <span>{projects.length} / {projectLimitLabel} projects</span>
-            </div>
+            </button>
             <button className='btn btn-ghost console-create-btn project-console-manage-btn' onClick={() => go('/console/subscription')}>Manage subscription</button>
             <button className='btn btn-primary console-create-btn' disabled={isAtProjectLimit} onClick={() => go('/console/new')}>+ New project</button>
           </div>
         </header>
 
-        <section className='project-console-stats'>
-          {usageCards.map((card) => <div className='project-console-stat' key={card.label}><div><span>{card.label}</span><strong>{card.value}</strong></div><i>{card.icon}</i></div>)}
-        </section>
-
-        <section className='project-console-onboarding card'>
-          <div className='project-console-section-head'><div><strong>✣ Getting Started</strong><span>Complete these steps to get your API gateway running</span></div><b>{completedSteps}/{onboardingSteps.length}<small>Completed</small></b></div>
-          <div className='project-console-progress'><span style={{ width: `${onboardingPercent}%` }} /></div>
-          <div className='project-console-steps'>{onboardingSteps.map((step) => { const StepTag = step.onClick ? 'button' : 'div'; return <StepTag type={step.onClick ? 'button' : undefined} className={`${step.done ? 'done' : ''} ${step.onClick ? 'clickable' : 'locked'}`} onClick={step.onClick} key={step.label}><IconCheck />{step.label}</StepTag>; })}</div>
-        </section>
+        {!hideOnboarding && (
+          <section className='project-console-onboarding card'>
+            <div className='project-console-section-head'><div><strong>✣ Getting Started</strong><span>Complete these steps to get your API gateway running</span></div><div className='onboarding-meta'><b>{completedSteps}/{onboardingSteps.length}<small>Completed</small></b><button type='button' className='onboarding-close' onClick={dismissOnboarding} aria-label='Hide getting started'>✕</button></div></div>
+            <div className='project-console-progress'><span style={{ width: `${onboardingPercent}%` }} /></div>
+            <div className='project-console-steps'>{onboardingSteps.map((step) => { const StepTag = step.onClick ? 'button' : 'div'; return <StepTag type={step.onClick ? 'button' : undefined} className={`${step.done ? 'done' : ''} ${step.onClick ? 'clickable' : 'locked'}`} onClick={step.onClick} key={step.label}><IconCheck />{step.label}</StepTag>; })}</div>
+          </section>
+        )}
 
         <section className='project-console-actions-wrap'>
           <h2>Quick Actions</h2>
@@ -223,13 +236,23 @@ export default function ProjectSelectView({ go }) {
         <div className='project-console-projects-head'><h2>Your Projects <span>{projects.length} / {projectLimitLabel}</span></h2><div className='project-console-search'><IconSearch /><input className='projects-search console-search-input' value={projectSearch} onChange={(e) => setProjectSearch(e.target.value)} placeholder='Search by name, label, or ID' /></div></div>
 
         <div className='projects-grid console-projects-grid'>
-          {filteredProjects.map((p) => (
-            <button key={p.id} className='card project-card console-project-card' onClick={() => go(`/console/${p.slug}/overview`)}>
-              <div className='console-project-card-header'><h3>{p.name}</h3><span className={`badge ${p.status === 'active' ? 'active' : 'paused'}`}>• {p.status}</span></div>
-              <div className='console-project-card-body'><div className='console-project-id'>{p.slug}</div><div className='console-project-date'>Created {fmtDate(p.created_at)}</div></div>
-              <div className='console-project-card-footer'><span /><span className='project-delete console-project-delete' onClick={(e) => { e.stopPropagation(); setProjectToDelete(p); setDeleteConfirm(''); }}><IconTrash /></span></div>
-            </button>
-          ))}
+          {filteredProjects.map((p) => {
+            const projectRef = p.slug || p.id;
+            const copyId = `project-${p.id}`;
+            return (
+              <article key={p.id} className='card project-card console-project-card' role='button' tabIndex={0} onClick={() => go(`/console/${projectRef}/overview`)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') go(`/console/${projectRef}/overview`); }}>
+                <div className='console-project-card-header'><h3>{p.name}</h3><span className={`badge ${p.status === 'active' ? 'active' : 'paused'}`}>• {p.status}</span></div>
+                <div className='console-project-card-body'>
+                  <div className='console-project-id-wrap'>
+                    <div className='console-project-id'>{projectRef}</div>
+                    <button type='button' className='project-id-copy' onClick={(e) => { e.stopPropagation(); copyText(projectRef, copyId); }}>{copiedItem === copyId ? 'Copied' : 'Copy ID'}</button>
+                  </div>
+                  <div className='console-project-date'>Created {fmtDate(p.created_at)}</div>
+                </div>
+                <div className='console-project-card-footer'><span /><button type='button' className='project-delete console-project-delete' onClick={(e) => { e.stopPropagation(); setProjectToDelete(p); setDeleteConfirm(''); }} aria-label={`Delete ${p.name}`}><IconTrash /></button></div>
+              </article>
+            );
+          })}
         </div>
 
         <div className={`modal-backdrop ${projectToDelete ? 'open' : ''}`} onClick={(e) => e.target === e.currentTarget && setProjectToDelete(null)}>

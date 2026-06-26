@@ -24,8 +24,8 @@ export default function ConsoleHeader({ page, selectedProject, projectSlug, onSw
     window.history.pushState({ from }, '', `/console/${target}`);
     window.dispatchEvent(new Event('popstate'));
   };
-  const userLabel = user?.email || user?.name || 'Signed in';
-  const avatar = (user?.email || user?.name || selectedProject?.name || 'K').charAt(0).toUpperCase();
+  const userLabel = user?.name || user?.email || 'Signed in';
+  const avatar = (user?.name || user?.email || selectedProject?.name || 'K').charAt(0).toUpperCase();
 
   const updateMenuPosition = () => {
     const rect = userMenuButtonRef.current?.getBoundingClientRect();
@@ -118,7 +118,7 @@ export default function ConsoleHeader({ page, selectedProject, projectSlug, onSw
         </div>
         <div className='mobile-appbar-actions'>
           <button className='mobile-icon-btn' onClick={onOpenNotifications} aria-label='Notifications'><IconBell width={20} height={20} /></button>
-          <button className='mobile-avatar' onClick={() => goAccount('profile')} aria-label='Profile'>{avatar}</button>
+          <button className='mobile-avatar' onClick={() => goAccount('profile')} aria-label='Profile'>{user?.picture ? <img src={user.picture} alt='' /> : avatar}</button>
           <button className='mobile-logout' onClick={logout} aria-label='Logout'>Logout</button>
         </div>
       </div>

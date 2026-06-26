@@ -271,6 +271,34 @@ fastify.get('/api/me', async (req, reply) => {
   return { user: auth.user, organization: auth.organization, organizations };
 });
 
+fastify.patch('/api/me', {
+  schema: { body: { type: 'object', properties: { name: { type: 'string' }, workspaceName: { type: 'string' } } } },
+}, async (req, reply) => {
+  const auth = await requireOrgRole(req, reply, ['owner', 'admin']); if (!auth) return;
+  const body = req.body || {};
+  const hasName = Object.prototype.hasOwnProperty.call(body, 'name');
+  const hasWorkspaceName = Object.prototype.hasOwnProperty.call(body, 'workspaceName');
+  const name = hasName ? String(body.name || '').trim() : auth.user.name;
+  const workspaceName = hasWorkspaceName ? String(body.workspaceName || '').trim() : auth.organization.name;
+  if (hasName && !name) return reply.code(400).send(ERR('VALIDATION_ERROR', 'name required'));
+  if (hasWorkspaceName && !workspaceName) return reply.code(400).send(ERR('VALIDATION_ERROR', 'workspace name required'));
+  if (!hasName && !hasWorkspaceName) return reply.code(400).send(ERR('VALIDATION_ERROR', 'nothing to update'));
+
+  const { rows: userRows } = hasName
+    ? await query(
+      `UPDATE users SET name = $1, updated_at = NOW() WHERE id = $2 RETURNING id, auth0_sub, email, name, picture_url`,
+      [name, auth.user.id],
+    )
+    : await query(`SELECT id, auth0_sub, email, name, picture_url FROM users WHERE id = $1`, [auth.user.id]);
+  const { rows: orgRows } = hasWorkspaceName
+    ? await query(
+      `UPDATE organizations SET name = $1, updated_at = NOW() WHERE id = $2 RETURNING id, name, slug, plan, subscription_status, razorpay_subscription_id`,
+      [workspaceName, auth.organization.id],
+    )
+    : await query(`SELECT id, name, slug, plan, subscription_status, razorpay_subscription_id FROM organizations WHERE id = $1`, [auth.organization.id]);
+  return { user: userRows[0], organization: { ...orgRows[0], role: auth.organization.role } };
+});
+
 async function getProject(req, reply) {
   const auth = await requireAuth(req, reply); if (!auth) return null;
   const projectRef = String(req.headers['x-project-id'] || '').trim();

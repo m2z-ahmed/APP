@@ -1,0 +1,22 @@
+API Key Resend : re_AURNyKR1_LtQdrutTmYDn4A82vTDkv61t
+How Members should work next:
+1. Backend files to update:
+   - Backend/migrations/007_members_invites.sql: add invitation fields/tables if needed for pending invites, accepted timestamps, and invite tokens.
+   - Backend/auth.cjs: expand organization role helpers if we add role-based member management rules.
+   - Backend/server.cjs: add /api/members and /api/invites endpoints for listing members, inviting users, changing roles, and removing members.
+2. Frontend files to update:
+   - Frontend/src/components/pages/MembersPage.jsx: replace the Coming soon page with a real members table, role badges, invite actions, remove-member actions, and loading/empty states.
+   - Frontend/src/components/pages/RolesPage.jsx or a shared roles config file: define Owner/Admin/Developer/Viewer permissions so Members can assign roles consistently.
+   - Frontend/src/views/ConsoleShell.jsx: route members/roles/invites to real pages instead of PlaceholderPage as each page becomes active.
+   - Frontend/src/contexts/LethemContext.jsx: add loadMembers/loadInvites helpers if member data should be shared across pages.
+   - Frontend/src/global/style.css: add responsive table/card styles for mobile member management.
+3. User flow:
+   - Owner opens Members.
+   - Owner sees current organization members and roles.
+   - Owner invites a teammate by email and selects a role.
+   - Pending invites appear in Invites.
+   - When the teammate accepts/signs in, they become an organization member and can access allowed project areas.
+4. Why Members first:
+   - It unlocks collaboration immediately.
+   - Roles are only useful once there are multiple members to assign them to.
+   - Invites become much clearer after the Members list exists.
