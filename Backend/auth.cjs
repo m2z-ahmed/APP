@@ -106,16 +106,17 @@ function slugify(value) {
 
 async function syncAuthUser(claims) {
   const auth0Sub = String(claims.sub);
-  const email = claims.email ? String(claims.email).trim().toLowerCase() : null;
-  const name = claims.name || claims.nickname || email || 'Lethem User';
+  const normalizedEmail = claims.email ? String(claims.email).trim().toLowerCase() : '';
+  const email = normalizedEmail || null;
+  const name = String(claims.name || claims.nickname || email || 'Lethem User').trim() || 'Lethem User';
   const pictureUrl = claims.picture || null;
   const emailVerified = Boolean(claims.email_verified);
   const { rows } = await query(
     `INSERT INTO users (id, auth0_sub, email, name, picture_url, email_verified, account_status, last_seen_at, login_count, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, 'active', NOW(), 1, NOW())
      ON CONFLICT (auth0_sub) DO UPDATE SET
-       email = EXCLUDED.email,
-       name = COALESCE(NULLIF(users.name, ''), EXCLUDED.name),
+       email = COALESCE(NULLIF(EXCLUDED.email, ''), NULLIF(users.email, ''), users.email),
+       name = COALESCE(NULLIF(users.name, ''), NULLIF(EXCLUDED.name, ''), 'Lethem User'),
        picture_url = EXCLUDED.picture_url,
        email_verified = EXCLUDED.email_verified,
        account_status = 'active',
@@ -123,7 +124,7 @@ async function syncAuthUser(claims) {
        last_seen_at = NOW(),
        login_count = users.login_count + 1,
        updated_at = NOW()
-     RETURNING id, auth0_sub, email, name, picture_url, email_verified, account_status`,
+     RETURNING id, auth0_sub, email, name, picture_url, email_verified, account_status, onboarding_completed_at`,
     [randomUUID(), auth0Sub, email, name, pictureUrl, emailVerified],
   );
   const user = rows[0];
@@ -146,7 +147,7 @@ async function acceptPendingInvites(user) {
   const email = String(user?.email || '').trim().toLowerCase();
   if (!email) return;
   const { rows } = await query(
-    `SELECT id, organization_id, role
+    `SELECT id, organization_id, project_id, role
      FROM organization_invites
      WHERE LOWER(email) = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()`,
     [email],
@@ -154,12 +155,21 @@ async function acceptPendingInvites(user) {
   for (const invite of rows) {
     await query('BEGIN');
     try {
-      await query(
-        `INSERT INTO organization_members (organization_id, user_id, role, updated_at)
-         VALUES ($1, $2, $3, NOW())
-         ON CONFLICT (organization_id, user_id) DO UPDATE SET role = EXCLUDED.role, updated_at = NOW()`,
-        [invite.organization_id, user.id, normalizeOrgRole(invite.role)],
-      );
+      if (invite.project_id) {
+        await query(
+          `INSERT INTO project_members (project_id, user_id, role, updated_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role, updated_at = NOW()`,
+          [invite.project_id, user.id, normalizeOrgRole(invite.role)],
+        );
+      } else {
+        await query(
+          `INSERT INTO organization_members (organization_id, user_id, role, updated_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (organization_id, user_id) DO UPDATE SET role = EXCLUDED.role, updated_at = NOW()`,
+          [invite.organization_id, user.id, normalizeOrgRole(invite.role)],
+        );
+      }
       await query(
         `UPDATE organization_invites SET accepted_at = NOW(), accepted_by_user_id = $1, invited_user_id = COALESCE(invited_user_id, $1), updated_at = NOW() WHERE id = $2`,
         [user.id, invite.id],

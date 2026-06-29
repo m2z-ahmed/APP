@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLethem } from '../contexts/LethemContext';
 import { useAuth } from '../contexts/AuthContext';
 import { LogoIcon } from '../components/parts/Logo';
@@ -11,15 +11,26 @@ export default function ProjectSelectView({ go }) {
     filteredProjects, showPlanBanner, setShowPlanBanner,
     projectToDelete, setProjectToDelete,
     deleteConfirm, setDeleteConfirm, deleteProject,
-    notif, notify,
-    ctx: { API, fmtDate, fmtNum, billing, subkeys, masterKeys, analytics, copyText, copiedItem },
+    notif, notify, account, updateAccount,
+    ctx: { API, fmtDate, fmtNum, billing, subkeys, masterKeys, analytics, copyText, copiedItem, invites, loadInvites, acceptInvite, revokeInvite, api },
   } = useLethem();
   const { user, logout, getAccessToken, isAuthenticated } = useAuth();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [accountUsage, setAccountUsage] = useState({ subkeys: 0, masterKeys: 0, tokens: 0, requests: 0, loading: false });
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [quotaRequests, setQuotaRequests] = useState([]);
+  const [selectedInvite, setSelectedInvite] = useState(null);
+  const [notificationBusy, setNotificationBusy] = useState('');
+  const [notificationsSeenKey, setNotificationsSeenKey] = useState('');
+  const notificationWrapRef = useRef(null);
   const onboardingCacheScope = user?.sub || 'anonymous';
   const onboardingDismissedKey = '/console-page/getting-started-dismissed';
   const [hideOnboarding, setHideOnboarding] = useState(() => Boolean(cacheGet(onboardingDismissedKey, onboardingCacheScope)));
+  const [setupStep, setSetupStep] = useState('name');
+  const [setupSaving, setSetupSaving] = useState(false);
+  const authName = user?.name && user.name !== user.email ? user.name : '';
+  const [setupName, setSetupName] = useState(authName || 'Lethem User');
+  const [setupWorkspaceName, setSetupWorkspaceName] = useState('My Workspace');
 
   const currentPlan = billing?.plans?.find((plan) => plan.id === billing.currentPlan) || billing?.plans?.find((plan) => plan.id === 'free');
   const limits = currentPlan?.limits || {};
@@ -39,7 +50,108 @@ export default function ProjectSelectView({ go }) {
   const userLabel = user?.name || user?.email || 'Signed in';
   const avatar = userLabel.charAt(0).toUpperCase();
   const avatarImage = user?.picture || '';
+  const pendingInvites = (invites || []).filter((invite) => invite.direction === 'received' && invite.can_accept);
+  const pendingQuotaRequests = quotaRequests.filter((request) => request.status === 'pending');
+  const notificationCount = pendingInvites.length + pendingQuotaRequests.length;
+  const notificationSignature = `${pendingInvites.map((invite) => invite.id).sort().join(',')}|${pendingQuotaRequests.map((request) => request.id).sort().join(',')}`;
+  const hasNewNotifications = notificationCount > 0 && notificationsSeenKey !== notificationSignature;
+  const needsSetup = account && !account.user?.onboarding_completed_at;
 
+  useEffect(() => {
+    if (!account) return;
+    setSetupName(account.user?.name || authName || 'Lethem User');
+    setSetupWorkspaceName(account.organization?.name || 'My Workspace');
+  }, [account?.user?.name, account?.organization?.name, authName]);
+
+  const saveSetupName = async (skip = false) => {
+    setSetupSaving(true);
+    try {
+      const name = skip ? 'Lethem User' : (setupName.trim() || 'Lethem User');
+      await updateAccount({ name });
+      setSetupStep('workspace');
+    } catch (e) {
+      notify(e.message || 'Unable to save your name', 'error');
+    } finally { setSetupSaving(false); }
+  };
+
+  const saveSetupWorkspace = async (skip = false) => {
+    setSetupSaving(true);
+    try {
+      const workspaceName = skip ? 'My Workspace' : (setupWorkspaceName.trim() || 'My Workspace');
+      await updateAccount({ workspaceName, onboardingCompleted: true });
+      setSetupStep('greet');
+      setTimeout(() => go('/console'), 1200);
+    } catch (e) {
+      notify(e.message || 'Unable to save your workspace', 'error');
+    } finally { setSetupSaving(false); }
+  };
+
+
+  const loadNotificationData = async () => {
+    await loadInvites?.().catch(() => []);
+    if (!projects.length) { setQuotaRequests([]); return []; }
+    const results = await Promise.allSettled(projects.map(async (project) => {
+      const projectId = project.slug || project.id;
+      const rows = await api('/api/quota-requests', { noCache: true, headers: { 'x-project-id': projectId } });
+      return (Array.isArray(rows) ? rows : []).map((request) => ({ ...request, project_id: projectId, project_name: project.name }));
+    }));
+    const rows = results.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
+    setQuotaRequests(rows);
+    return rows;
+  };
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    loadNotificationData().catch(() => {});
+  }, [isAuthenticated, projects]);
+
+  useEffect(() => {
+    const key = `lethem_notifications_seen:${user?.sub || 'anonymous'}`;
+    try { setNotificationsSeenKey(localStorage.getItem(key) || ''); } catch (_) { setNotificationsSeenKey(''); }
+  }, [user?.sub]);
+
+  useEffect(() => {
+    if (!notificationsOpen) return undefined;
+    const onPointerDown = (event) => {
+      if (!notificationWrapRef.current?.contains(event.target)) setNotificationsOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [notificationsOpen]);
+
+  const toggleNotifications = async () => {
+    const nextOpen = !notificationsOpen;
+    setNotificationsOpen(nextOpen);
+    if (nextOpen) {
+      await loadNotificationData().catch(() => {});
+      const key = `lethem_notifications_seen:${user?.sub || 'anonymous'}`;
+      try { localStorage.setItem(key, notificationSignature); } catch (_) {}
+      setNotificationsSeenKey(notificationSignature);
+    }
+  };
+
+  const decideQuotaRequest = async (request, status) => {
+    const key = `quota:${request.id}`;
+    setNotificationBusy(key);
+    try {
+      await api(`/api/quota-requests/${request.id}`, { method: 'PATCH', body: { status }, headers: { 'x-project-id': request.project_id } });
+      notify(status === 'approved' ? 'Quota request approved' : 'Quota request rejected');
+      await loadNotificationData();
+    } catch (e) { notify(e.message || 'Unable to update quota request', 'error'); }
+    finally { setNotificationBusy(''); }
+  };
+
+  const decideInvite = async (invite, action) => {
+    const key = `invite:${invite.id}`;
+    setNotificationBusy(key);
+    try {
+      if (action === 'accept') await acceptInvite(invite.id);
+      if (action === 'reject') await revokeInvite(invite.id);
+      setSelectedInvite(null);
+      await loadNotificationData();
+    } catch (e) { notify(e.message || 'Unable to update invite', 'error'); }
+    finally { setNotificationBusy(''); }
+  };
 
 
   useEffect(() => {
@@ -171,10 +283,58 @@ export default function ProjectSelectView({ go }) {
 
   return (
     <div className='page active console-select-page'>
+
+      {needsSetup && (
+        <div className='modal-backdrop open onboarding-wizard-backdrop'>
+          <div className='modal onboarding-wizard' role='dialog' aria-modal='true' aria-label='Get Started onboarding'>
+            {setupStep === 'name' && <>
+              <div className='onboarding-kicker'>Get Started</div>
+              <div className='modal-title'>What should we call you?</div>
+              <p className='card-sub'>We prefilled this from your sign-in profile when available. You can edit it now.</p>
+              <div className='field'><label>Name</label><input value={setupName} onChange={(e) => setSetupName(e.target.value)} placeholder='Lethem User' autoFocus /></div>
+              <div className='modal-footer'><button className='btn btn-ghost' disabled={setupSaving} onClick={() => saveSetupName(true)}>Skip</button><button className='btn btn-primary' disabled={setupSaving} onClick={() => saveSetupName(false)}>Continue</button></div>
+            </>}
+            {setupStep === 'workspace' && <>
+              <div className='onboarding-kicker'>Workspace</div>
+              <div className='modal-title'>Name your workspace</div>
+              <p className='card-sub'>This is the shared home for your projects and API access settings.</p>
+              <div className='field'><label>Workspace name</label><input value={setupWorkspaceName} onChange={(e) => setSetupWorkspaceName(e.target.value)} placeholder='My Workspace' autoFocus /></div>
+              <div className='modal-footer'><button className='btn btn-ghost' disabled={setupSaving} onClick={() => saveSetupWorkspace(true)}>Skip</button><button className='btn btn-primary' disabled={setupSaving} onClick={() => saveSetupWorkspace(false)}>Finish</button></div>
+            </>}
+            {setupStep === 'greet' && <div className='onboarding-greet'><div className='onboarding-kicker'>You're all set</div><div className='modal-title'>Welcome, {(setupName || 'Lethem User').trim()}!</div><p className='card-sub'>Taking you to your console.</p></div>}
+          </div>
+        </div>
+      )}
+
+      {selectedInvite && (
+        <div className='modal-backdrop open invite-notification-backdrop' onClick={(e) => e.target === e.currentTarget && setSelectedInvite(null)}>
+          <div className='modal invite-notification-modal'>
+            <div className='modal-title'>Project invite</div>
+            <div className='invite-detail-grid'><span><b>Project</b>{selectedInvite.project_name || selectedInvite.organization_name || 'Project'}</span><span><b>Workspace</b>{selectedInvite.organization_name || 'Workspace'}</span><span><b>Sent by</b>{selectedInvite.invited_by_name || selectedInvite.invited_by_email || 'A teammate'}</span><span><b>Role</b>{selectedInvite.role}</span><span><b>Expires</b>{fmtDate(selectedInvite.expires_at)}</span></div>
+            <div className='modal-footer'><button className='btn btn-green' disabled={notificationBusy === `invite:${selectedInvite.id}`} onClick={() => decideInvite(selectedInvite, 'accept')}>Accept</button><button className='btn btn-danger' disabled={notificationBusy === `invite:${selectedInvite.id}`} onClick={() => decideInvite(selectedInvite, 'reject')}>Reject</button><button className='btn btn-ghost' onClick={() => setSelectedInvite(null)}>Close</button></div>
+          </div>
+        </div>
+      )}
+
       <nav className='project-console-nav'>
         <div className='project-console-brand'><span><LogoIcon size={18} /></span><div><strong>KeyGate</strong><small>Projects Console</small></div></div>
         <div className='project-console-nav-actions'>
-          <button className='project-console-icon-btn' type='button' aria-label='Notifications' onClick={() => goProjectPage('notifications')}><IconBell /></button>
+          <div className='notification-popover-wrap' ref={notificationWrapRef}>
+            <button className={`project-console-icon-btn notification-bell ${hasNewNotifications ? 'has-new' : ''}`} type='button' aria-label='Notifications' aria-expanded={notificationsOpen} onClick={toggleNotifications}><IconBell />{hasNewNotifications && <span className='notification-dot' />}</button>
+            {notificationsOpen && <div className='notification-popover-panel' role='dialog' aria-label='Notifications panel'>
+              <div className='notification-popover-head'><strong>Notifications</strong><span>{notificationCount ? `${notificationCount} new` : 'All caught up'}</span></div>
+              {notificationCount === 0 ? <div className='notification-empty'>No important notifications right now.</div> : <div className='notification-list'>
+                {pendingInvites.map((invite) => <div className='notification-item' key={`invite-${invite.id}`}>
+                  <div><b>Project invite</b><p>{invite.project_name || invite.organization_name || 'Project'} invited you as {invite.role}.</p></div>
+                  <button className='btn btn-sm btn-ghost' onClick={() => setSelectedInvite(invite)}>View</button>
+                </div>)}
+                {pendingQuotaRequests.map((request) => <div className='notification-item' key={`quota-${request.id}`}>
+                  <div><b>Quota request</b><p>{request.project_name || 'Project'} · {request.subkey_name || 'Subkey'} asked for {request.request_type}{request.amount ? ` (${request.amount})` : ''}.</p></div>
+                  <span className='notification-actions'><button className='btn btn-sm btn-green' disabled={notificationBusy === `quota:${request.id}`} onClick={() => decideQuotaRequest(request, 'approved')}>Accept</button><button className='btn btn-sm btn-danger' disabled={notificationBusy === `quota:${request.id}`} onClick={() => decideQuotaRequest(request, 'rejected')}>Reject</button></span>
+                </div>)}
+              </div>}
+            </div>}
+          </div>
           <div className='project-console-user-wrap'>
             <button className='project-console-user' type='button' aria-haspopup='menu' aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((open) => !open)}><span>{avatarImage ? <img src={avatarImage} alt='' /> : avatar}</span>{userLabel}</button>
             {userMenuOpen && <div className='project-console-user-menu' role='menu'>
@@ -192,7 +352,7 @@ export default function ProjectSelectView({ go }) {
         <header className='console-landing-header project-console-hero'>
           <div>
             <h1>Projects Console</h1>
-            <p>Create, switch, and manage isolated workspaces</p>
+            <p>Create, switch, and manage isolated projects</p>
           </div>
           <div className='console-top-bar'>
             <button type='button' className='console-plan-badge project-console-plan-link' onClick={() => go('/console/subscription')} aria-label='Open subscription page'>

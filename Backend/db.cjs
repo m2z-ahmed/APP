@@ -92,6 +92,7 @@ async function ensureAuthSchema() {
       last_seen_at TIMESTAMPTZ,
       deleted_at TIMESTAMPTZ,
       login_count INTEGER NOT NULL DEFAULT 0,
+      onboarding_completed_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -121,6 +122,7 @@ async function ensureAuthSchema() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS login_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ;
     ALTER TABLE users DROP CONSTRAINT IF EXISTS users_account_status_check;
     ALTER TABLE users ADD CONSTRAINT users_account_status_check CHECK (account_status IN ('active','deleted'));
 
@@ -128,6 +130,16 @@ async function ensureAuthSchema() {
     CREATE INDEX IF NOT EXISTS idx_users_email_lower ON users(LOWER(email));
     CREATE INDEX IF NOT EXISTS idx_organizations_owner_user_id ON organizations(owner_user_id);
     CREATE INDEX IF NOT EXISTS idx_organization_members_user_id ON organization_members(user_id);
+
+    CREATE TABLE IF NOT EXISTS project_members (
+      project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('admin','developer','viewer','member')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (project_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_members_user_id ON project_members(user_id);
     ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'free';
     ALTER TABLE organizations ADD COLUMN IF NOT EXISTS razorpay_customer_id TEXT;
     ALTER TABLE organizations ADD COLUMN IF NOT EXISTS razorpay_subscription_id TEXT;
@@ -163,6 +175,7 @@ async function ensureAuthSchema() {
       invited_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
       accepted_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
       invited_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
       accepted_at TIMESTAMPTZ,
       revoked_at TIMESTAMPTZ,
       expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
@@ -172,11 +185,13 @@ async function ensureAuthSchema() {
     );
 
     ALTER TABLE organization_invites ADD COLUMN IF NOT EXISTS invited_user_id UUID REFERENCES users(id) ON DELETE SET NULL;
+    ALTER TABLE organization_invites ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES projects(id) ON DELETE CASCADE;
 
     CREATE INDEX IF NOT EXISTS idx_organization_invites_org ON organization_invites(organization_id);
     CREATE INDEX IF NOT EXISTS idx_organization_invites_email ON organization_invites(LOWER(email));
     CREATE INDEX IF NOT EXISTS idx_organization_invites_token_hash ON organization_invites(token_hash);
     CREATE INDEX IF NOT EXISTS idx_organization_invites_invited_user_id ON organization_invites(invited_user_id);
+    CREATE INDEX IF NOT EXISTS idx_organization_invites_project_id ON organization_invites(project_id);
   `);
 }
 
